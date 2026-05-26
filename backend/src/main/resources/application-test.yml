@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    url: ${TEST_DATASOURCE_URL:jdbc:tc:postgresql:15-alpine:///nexus_os_test}
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  kafka:
+    bootstrap-servers: ${TEST_KAFKA_BOOTSTRAP:localhost:9093}
+  flyway:
+    clean-disabled: false
+
+temporal:
+  service-address: ${TEST_TEMPORAL_ADDRESS:in-memory}   # temporal-testing in-mem service
+
+nexus:
+  mock-mode:
+    auto-enable: true

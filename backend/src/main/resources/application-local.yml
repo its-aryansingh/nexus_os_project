@@ -1,0 +1,9 @@
+spring:
+  flyway:
+    clean-disabled: false               # allow flyway:clean in local
+  jpa:
+    show-sql: false
+logging:
+  level:
+    com.nexus.os: DEBUG
+    org.hibernate.SQL: DEBUG
