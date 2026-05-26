@@ -111,3 +111,66 @@ Thumbs.db
 *.pid.lock
 coverage/
 .nyc_output/
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Coordination & Local-Only Agent Files
+# These exist locally for AI agents to coordinate (read history, claim files,
+# record decisions). They never appear on GitHub — the public repo only sees
+# actual code changes authored by Aryan Singh.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Master coordination
+/COORDINATION.md
+
+# Root-level agent entry points (frontend/AGENTS.md and frontend/CLAUDE.md are
+# different files — they live inside /frontend and ARE committed because they
+# only contain Next.js 16 advisory notes).
+/CLAUDE.md
+/GEMINI.md
+/AGENTS.md
+/plan.md
+
+# Per-agent context directories
+/.antigravitycli/
+/.claude/
+/.cursor/
+/.windsurf/
+/.codex/
+
+# Local memory + scratch
+/memory/
+/.notes/
+
+# Git hooks bootstrapper (hooks themselves live under .githooks; we ignore
+# the directory entirely so it never lands on GitHub)
+/.githooks/
+
+# ─── Build artifacts not previously covered ──────────────────────────────────
+/test-results.log
+/test-results/
+/playwright-report/
+/blob-report/
+backend/target/
+frontend/.turbo/
+frontend/tsconfig.tsbuildinfo
+
+# ─── Backend Spring Boot local + observability ───────────────────────────────
+backend/logs/
+backend/heap-dumps/
+backend/HELP.md
+backend/.spring-boot-devtools.properties
+
+# ─── Docker overrides (per-developer) ─────────────────────────────────────────
+docker-compose.override.*.yml
+!docker-compose.override.example.yml
+
+# ─── Prometheus / Grafana / Jaeger local storage ─────────────────────────────
+/observability/data/
+/observability/grafana-data/
+/observability/prometheus-data/
+
+# ─── Generated diagrams (PlantUML PNG outputs — keep .puml source) ───────────
+docs/diagrams/*.png
+docs/diagrams/*.svg
+!docs/diagrams/*.puml
+!docs/diagrams/*.mmd
