@@ -62,10 +62,25 @@ public class WorkflowStarter {
     public String startAgentOrchestration(UUID tenantId, UUID workflowDefinitionId, Map<String, Object> payload) {
         final var workflowId = "nexus-orch-" + UUID.randomUUID();
 
-        // Enrich payload with tenant context for the activity layer.
+        // Persist the read-model row BEFORE submission so the UI reflects it
+        // even if the worker is slow to pick the workflow up.
+        final var run = new WorkflowRun();
+        run.setTenantId(tenantId);
+        run.setWorkflowId(workflowDefinitionId);
+        run.setTemporalWorkflowId(workflowId);
+        run.setTemporalRunId("pending");
+        run.setStatus(WorkflowRun.Status.running);
+
+        // Enrich payload with tenant + workflow_run_id for the activity layer.
+        // workflow_run_id is essential for the completion projector to update
+        // the right row when the activity finishes.
         final var enriched = new LinkedHashMap<String, Object>();
         enriched.put("tenant_id", tenantId.toString());
         if (payload != null) enriched.putAll(payload);
+        run.setInputPayload(enriched);
+        runs.save(run);
+        // workflow_run_id added AFTER save so the row has its id assigned by JPA
+        enriched.put("workflow_run_id", run.getId().toString());
 
         final var payloadJson = serialize(enriched);
         final var stub = workflowClient.newWorkflowStub(
@@ -78,26 +93,17 @@ public class WorkflowStarter {
                         .build()
         );
 
-        // Persist read-model row BEFORE submission so the UI reflects it
-        // even if the worker is slow to pick the workflow up.
-        final var run = new WorkflowRun();
-        run.setTenantId(tenantId);
-        run.setWorkflowId(workflowDefinitionId);
-        run.setTemporalWorkflowId(workflowId);
-        run.setTemporalRunId("pending");
-        run.setStatus(WorkflowRun.Status.running);
-        run.setInputPayload(enriched);
-        runs.save(run);
-
         try {
             // Async submission — WorkflowClient.start() returns immediately
-            // and the workflow runs on the worker. v0.2 wires a completion
-            // signal to update the run row with output_payload + finished_at.
+            // and the workflow runs on the worker. AgentActivityImpl emits
+            // a workflow.run.completed event on the final activity which
+            // WorkflowEventProjector consumes to update this row.
             final var execution = WorkflowClient.start(stub::orchestrate, payloadJson);
             run.setTemporalRunId(execution.getRunId());
             runs.save(run);
             startedCounter.increment();
-            log.info("Started workflow {} for tenant {} (run {})", workflowId, tenantId, execution.getRunId());
+            log.info("Started workflow {} for tenant {} (run {} -> temporal run {})",
+                    workflowId, tenantId, run.getId(), execution.getRunId());
             return workflowId;
         } catch (RuntimeException submitFailed) {
             run.setStatus(WorkflowRun.Status.failed);

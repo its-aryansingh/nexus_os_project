@@ -8,6 +8,8 @@ import com.nexus.os.agents.NexusAgent;
 import com.nexus.os.agents.PromptCache;
 import com.nexus.os.agents.TokenPricing;
 import com.nexus.os.billing.CostMeter;
+import com.nexus.os.domain.OutboxEvent;
+import com.nexus.os.domain.OutboxRepository;
 import com.nexus.os.tenancy.TenantContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -17,6 +19,8 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -43,6 +47,7 @@ public class AgentActivityImpl implements AgentActivity {
     private final CostMeter costMeter;
     private final TokenPricing pricing;
     private final ObjectMapper objectMapper;
+    private final OutboxRepository outbox;
     private final Timer activityTimer;
 
     public AgentActivityImpl(
@@ -53,6 +58,7 @@ public class AgentActivityImpl implements AgentActivity {
             CostMeter costMeter,
             TokenPricing pricing,
             ObjectMapper objectMapper,
+            OutboxRepository outbox,
             MeterRegistry meters
     ) {
         this.nexusAgent = nexusAgent;
@@ -62,6 +68,7 @@ public class AgentActivityImpl implements AgentActivity {
         this.costMeter = costMeter;
         this.pricing = pricing;
         this.objectMapper = objectMapper;
+        this.outbox = outbox;
         this.activityTimer = Timer.builder("nexus.activity.execute")
                 .description("Time to execute one agent activity (cache + LLM + guard)")
                 .publishPercentileHistogram()
@@ -99,10 +106,19 @@ public class AgentActivityImpl implements AgentActivity {
     public String executeAgentTask(String agentId, String requestPayload) {
         final var payload = parsePayload(requestPayload);
         final var tenantId = bindTenant(payload);
+        final var workflowRunId = parseUuid(payload.get("workflow_run_id"));
+        final var taskStart = System.nanoTime();
         try {
             final var prompt = asString(payload.get("prompt"));
             final var capability = capabilityFor(agentId);
-            return invoke(tenantId, agentId, capability, prompt);
+            final var response = invoke(tenantId, agentId, capability, prompt);
+            emitCompletion(tenantId, workflowRunId, response, null,
+                    Duration.ofNanos(System.nanoTime() - taskStart));
+            return response;
+        } catch (RuntimeException fail) {
+            emitCompletion(tenantId, workflowRunId, null, fail.getMessage(),
+                    Duration.ofNanos(System.nanoTime() - taskStart));
+            throw fail;
         } finally {
             TenantContext.clear();
         }
@@ -196,6 +212,46 @@ public class AgentActivityImpl implements AgentActivity {
                 : UUID.fromString(raw);
         TenantContext.set(id);
         return id;
+    }
+
+    private UUID parseUuid(Object o) {
+        if (o == null) return null;
+        try {
+            return UUID.fromString(o.toString());
+        } catch (IllegalArgumentException malformed) {
+            return null;
+        }
+    }
+
+    /**
+     * Emit a workflow.run.completed (or .failed) event into the outbox.
+     * {@link com.nexus.os.kafka.WorkflowEventProjector} consumes it via
+     * Kafka and updates the corresponding {@code WorkflowRun} row, closing
+     * the CQRS read-model loop documented in ARCHITECTURE.md §4.1.
+     */
+    private void emitCompletion(UUID tenantId, UUID workflowRunId, String output, String error, Duration elapsed) {
+        if (workflowRunId == null) {
+            // Activity was invoked directly without a workflow row (e.g. tests);
+            // no projector to notify.
+            return;
+        }
+        final var payload = new LinkedHashMap<String, Object>();
+        payload.put("event_type", error == null ? "workflow.run.completed" : "workflow.run.failed");
+        payload.put("workflow_run_id", workflowRunId.toString());
+        payload.put("tenant_id", tenantId.toString());
+        payload.put("duration_ms", elapsed.toMillis());
+        payload.put("finished_at", OffsetDateTime.now().toString());
+        if (output != null) payload.put("output", output);
+        if (error != null) payload.put("error", error);
+
+        final var ev = new OutboxEvent();
+        ev.setTenantId(tenantId);
+        ev.setAggregateType("workflow_run");
+        ev.setAggregateId(workflowRunId.toString());
+        ev.setTopic("nexus.agent.events");
+        ev.setPartitionKey(workflowRunId.toString());
+        ev.setPayload(payload);
+        outbox.save(ev);
     }
 
     private Map<String, Object> parsePayload(String json) {
