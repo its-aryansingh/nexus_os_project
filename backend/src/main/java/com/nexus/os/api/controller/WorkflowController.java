@@ -4,12 +4,14 @@ import com.nexus.os.domain.Workflow;
 import com.nexus.os.domain.WorkflowRepository;
 import com.nexus.os.domain.WorkflowRun;
 import com.nexus.os.domain.WorkflowRunRepository;
+import com.nexus.os.observability.AuditLogger;
 import com.nexus.os.tenancy.TenantContext;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -18,10 +20,12 @@ public class WorkflowController {
 
     private final WorkflowRepository workflows;
     private final WorkflowRunRepository runs;
+    private final AuditLogger audit;
 
-    public WorkflowController(WorkflowRepository workflows, WorkflowRunRepository runs) {
+    public WorkflowController(WorkflowRepository workflows, WorkflowRunRepository runs, AuditLogger audit) {
         this.workflows = workflows;
         this.runs = runs;
+        this.audit = audit;
     }
 
     @GetMapping
@@ -38,7 +42,14 @@ public class WorkflowController {
     @PostMapping
     public Workflow create(@RequestBody Workflow workflow) {
         workflow.setTenantId(TenantContext.require());
-        return workflows.save(workflow);
+        final var saved = workflows.save(workflow);
+        audit.log("workflow.created", Map.of(
+                "workflowId", saved.getId(),
+                "slug", saved.getSlug(),
+                "version", saved.getVersion(),
+                "temporalType", saved.getTemporalWorkflowType()
+        ));
+        return saved;
     }
 
     @GetMapping("/runs")

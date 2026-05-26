@@ -2,10 +2,12 @@ package com.nexus.os.api.controller;
 
 import com.nexus.os.domain.AgentEntity;
 import com.nexus.os.domain.AgentRepository;
+import com.nexus.os.observability.AuditLogger;
 import com.nexus.os.tenancy.TenantContext;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -13,9 +15,11 @@ import java.util.UUID;
 public class AgentController {
 
     private final AgentRepository agents;
+    private final AuditLogger audit;
 
-    public AgentController(AgentRepository agents) {
+    public AgentController(AgentRepository agents, AuditLogger audit) {
         this.agents = agents;
+        this.audit = audit;
     }
 
     @GetMapping
@@ -32,11 +36,18 @@ public class AgentController {
     @PostMapping
     public AgentEntity create(@RequestBody AgentEntity agent) {
         agent.setTenantId(TenantContext.require());
-        return agents.save(agent);
+        final var saved = agents.save(agent);
+        audit.log("agent.created", Map.of(
+                "agentId", saved.getId(),
+                "slug", saved.getSlug(),
+                "model", saved.getModelPreference()
+        ));
+        return saved;
     }
 
     @DeleteMapping("/{id}")
     public void delete(@PathVariable UUID id) {
         agents.deleteById(id);
+        audit.log("agent.deleted", Map.of("agentId", id));
     }
 }
