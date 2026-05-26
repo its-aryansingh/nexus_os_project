@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Nexus OS — Logback configuration.
+
+    Two appenders: pretty console for local dev, JSON for prod / log
+    aggregators (Loki, ELK, Datadog). MDC keys traceId / spanId /
+    tenantId / requestId / agentId are injected by the TracingAspect +
+    TenantFilter and propagate into every line.
+-->
+<configuration>
+
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="nexus-os"/>
+    <springProperty scope="context" name="activeProfile" source="spring.profiles.active" defaultValue="local"/>
+
+    <!-- Pretty console for dev: key-value pairs after the level prefix. -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) [%thread] %magenta([traceId=%X{traceId:-} spanId=%X{spanId:-} tenant=%X{tenantId:-}]) %cyan(%logger{20}) - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- JSON one-line per event for production aggregators. -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>
+                {"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%logger","thread":"%thread","app":"${appName}","profile":"${activeProfile}","traceId":"%X{traceId:-}","spanId":"%X{spanId:-}","tenantId":"%X{tenantId:-}","requestId":"%X{requestId:-}","agentId":"%X{agentId:-}","msg":"%replace(%msg){'\"','\\\\\"'}","exception":"%replace(%xException){'\"','\\\\\"'}"}%n
+            </pattern>
+        </encoder>
+    </appender>
+
+    <!-- Separate audit category — always JSON so downstream pipelines can split. -->
+    <logger name="nexus.audit" level="INFO" additivity="false">
+        <appender-ref ref="JSON"/>
+    </logger>
+
+    <!-- Profile-aware default appender. -->
+    <springProfile name="local | test | default">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+    <springProfile name="prod | docker | k8s">
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+
+    <!-- Library noise reduction. -->
+    <logger name="org.apache.kafka" level="WARN"/>
+    <logger name="io.temporal" level="WARN"/>
+    <logger name="org.hibernate.SQL" level="INFO"/>
+    <logger name="org.hibernate.type.descriptor.sql" level="WARN"/>
+
+</configuration>
