@@ -2,6 +2,7 @@ package com.nexus.os.kafka;
 
 import com.nexus.os.domain.InboxEvent;
 import com.nexus.os.domain.InboxRepository;
+import com.nexus.os.temporal.WorkflowStarter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,10 +35,12 @@ public class InboundMessageConsumer {
     private static final String CONSUMER_NAME = "InboundMessageConsumer";
 
     private final InboxRepository inbox;
+    private final WorkflowStarter starter;
     private final MeterRegistry meters;
 
-    public InboundMessageConsumer(InboxRepository inbox, MeterRegistry meters) {
+    public InboundMessageConsumer(InboxRepository inbox, WorkflowStarter starter, MeterRegistry meters) {
         this.inbox = inbox;
+        this.starter = starter;
         this.meters = meters;
     }
 
@@ -80,26 +83,21 @@ public class InboundMessageConsumer {
         }
 
         try {
-            process(tenantId, payload);
+            // v0.1 routes every inbound message through the default workflow.
+            // v0.2 looks up channel_subscriptions to pick a tenant-specific
+            // workflow per channel + address.
+            final var workflowId = starter.startAgentOrchestration(tenantId, null, payload);
+            log.info("Dispatched inbound message to workflow {} (tenant {})", workflowId, tenantId);
             ack.acknowledge();
             meters.counter("nexus.kafka.processed", "topic", "nexus.inbound.messages").increment();
         } catch (Exception fail) {
-            // Do NOT ack on failure — Kafka will redeliver. The inbox row is
-            // still committed (we want to remember we tried), so the redelivery
-            // will also be deduped — DLQ flow lives in v0.2.
-            log.error("Failed to process inbound message {}: {}", eventId, fail.getMessage(), fail);
+            // Do NOT ack on failure — Kafka redelivers. The inbox row is
+            // committed (idempotency holds), so the retry deduplicates
+            // unless this transaction rolls back, in which case the row is
+            // gone and the retry processes cleanly. Both paths are safe.
+            log.error("Failed to dispatch inbound message {}: {}", eventId, fail.getMessage(), fail);
             meters.counter("nexus.kafka.failed", "topic", "nexus.inbound.messages").increment();
             throw fail;
         }
-    }
-
-    /**
-     * Real implementation kicks off the AgentOrchestrationWorkflow. v0.1
-     * scaffolding logs only — workflow start lives in v0.2 once the
-     * WorkflowClient bean is exposed to non-Temporal beans.
-     */
-    private void process(UUID tenantId, Map<String, Object> payload) {
-        log.info("Inbound message for tenant {}: keys={}", tenantId, payload.keySet());
-        // TODO v0.2: workflowClient.start(AgentOrchestrationWorkflow::orchestrate, JSON.stringify(payload));
     }
 }
