@@ -4,13 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
-  BarChart3,
   Bot,
   Boxes,
   Coins,
   GitBranch,
   Layers,
   LineChart,
+  MessageSquare,
   Plug,
   Settings,
   Sparkles,
@@ -26,6 +26,7 @@ type NavItem = {
 
 const NAV: NavItem[] = [
   { href: "/", label: "Dashboard", icon: <Boxes size={16} />, group: "core" },
+  { href: "/chat", label: "Chat", icon: <MessageSquare size={16} />, group: "core" },
   { href: "/agents", label: "Agents", icon: <Bot size={16} />, group: "core" },
   { href: "/studio", label: "Agent Studio", icon: <Sparkles size={16} />, group: "build" },
   { href: "/workflows", label: "Workflows", icon: <Workflow size={16} />, group: "build" },
