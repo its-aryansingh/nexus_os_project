@@ -34,23 +34,25 @@ pnpm-debug.log*
 .pnpm-store/
 
 # ─── Python (Local LLM Scripts) ──────────────────────────────────────────────
+# NOTE: scoped to /python/ subtree so Java's target/build folders and
+# the frontend's src/lib aren't accidentally caught.
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+/python/build/
+/python/develop-eggs/
+/python/dist/
+/python/downloads/
+/python/eggs/
+/python/.eggs/
+/python/lib/
+/python/lib64/
+/python/parts/
+/python/sdist/
+/python/var/
+/python/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
