@@ -27,10 +27,16 @@
 
 <p align="center">
   <a href="#-quick-start">Quick Start</a> •
+  <a href="#-deep-documentation">Deep Docs</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-tech-stack">Tech Stack</a> •
+  <a href="#-demo-path-zero-keys">Demo Path</a> •
   <a href="#-team--roles">Team</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+<p align="center">
+  <strong>v0.1 Foundation</strong> — coordination + deep docs + bottom-up backend, frontend, and infra are all in place. The system boots end-to-end without any API keys (deterministic mock providers).
 </p>
 
 ---
@@ -203,13 +209,17 @@ docker compose up -d
 
 This boots up:
 
-| Service | Port | Health Check |
+| Service | Port | Purpose |
 |:---|:---|:---|
-| PostgreSQL 15 | `5432` | `pg_isready` |
-| Kafka 3.7 (KRaft) | `9092` | Broker API versions |
-| Temporal Server | `7233` | gRPC endpoint |
-| Temporal UI | `8080` | Web dashboard |
-| Qdrant | `6333` / `6334` | REST / gRPC |
+| PostgreSQL 15 | `5432` | App state + Temporal backing store |
+| Kafka 3.7 (KRaft) | `9092` | Async event backbone (inbound/agent/outbound topics) |
+| Temporal Server | `7233` | Durable workflow execution |
+| Temporal UI | `8080` | Workflow inspection + time-travel replay |
+| Qdrant | `6333` / `6334` | Vector memory (HNSW) — REST / gRPC |
+| Redis 7 | `6379` | L2 prompt cache + token-bucket rate limiter |
+| Jaeger | `16686` | Distributed traces (OTLP collector on 4317/4318) |
+| Prometheus | `9090` | Metrics scrape + 15-day TSDB |
+| Grafana | `3001` | Dashboards — `Nexus OS Overview` pre-provisioned |
 
 ```bash
 # Verify all services are healthy
@@ -248,6 +258,37 @@ Dashboard available at → **http://localhost:3000**
 
 ---
 
+## 🎯 Demo Path (zero keys)
+
+The fastest way to verify the entire stack works end-to-end without configuring anything:
+
+1. `docker compose up -d` (waits for healthy)
+2. `cd backend && ./mvnw.cmd spring-boot:run`  (Windows: `mvnw.cmd`; macOS/Linux: `./mvnw`)
+3. `cd frontend && npm run dev`
+4. Open <http://localhost:3000/chat> and send a message.
+5. The reply streams back tagged `[demo-data]` — that's the `MockChatLanguageModel` doing its job. The request still flowed through the **full production pipeline**: tenancy filter → RLS aspect → cost-meter budget check → `PromptCache` (L1 Caffeine + L2 Redis) → `ModelRouter` → LangChain4j → `HallucinationGuard` → `CostMeter` ledger row.
+6. Inspect the trace at <http://localhost:16686> (Jaeger). Inspect the dashboard at <http://localhost:3001> (Grafana, `admin`/`admin`, dashboard "Nexus OS Overview"). Inspect the workflow at <http://localhost:8080> (Temporal UI).
+
+To swap the mock LLM for real OpenAI, set `LANGCHAIN4J_OPEN_AI_API_KEY` in `.env` and restart the backend. For local LLM, set `LANGCHAIN4J_OPEN_AI_BASE_URL=http://localhost:11434/v1` to point at Ollama (BYOM).
+
+---
+
+## 📚 Deep Documentation
+
+Start with these — every architectural claim in the project ties back to a section in one of these documents:
+
+| Doc | When to read |
+|:---|:---|
+| [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md) | ⭐ Capstone centerpiece — walks every named system-design pattern from foundational (caching, indexing, pooling) → intermediate (CQRS, sagas, pub-sub) → advanced (CAP/PACELC, consistent hashing, outbox + inbox, circuit breakers, observability triad, multi-tenancy) → AI-specific (RAG, MCP, A2A, Tribunal, ModelRouter, cost guardrails). Every concept anchored to a file path. |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Request flow with Mermaid + sequence diagrams, deployment topology (local + prod), module boundaries, persistence strategy, messaging topology, AI layer, frontend architecture, observability pipeline, scaling plan. |
+| [`docs/PRD.md`](docs/PRD.md) | Product spec — problem statement, personas, feature roadmap by phase, NFRs, evaluation criteria matrix. |
+| [`docs/COMPETITIVE_ANALYSIS.md`](docs/COMPETITIVE_ANALYSIS.md) | 2026 multi-agent landscape: LangGraph / CrewAI / Microsoft Agent Framework / Google ADK / OpenAgents / Spring AI. Where Nexus wins and where it concedes. |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | v0.1 → v1.0 phased plan + explicit non-goals + risk register. |
+| [`docs/ADRS/`](docs/ADRS/) | Architecture Decision Records 0001–0007 — Temporal over custom queue, LangChain4j over Spring AI, Kafka KRaft, Qdrant, MCP+A2A from day 1, shared-schema RLS, Saga over 2PC. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Team roles + GitFlow + commit conventions + PR workflow. |
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -261,31 +302,59 @@ nexus-os/
 ├── backend/                          # ☕ Java 21 + Spring Boot 3.4
 │   ├── pom.xml
 │   ├── mvnw.cmd / mvnw
-│   └── src/main/java/com/nexus/os/
-│       ├── NexusOsApplication.java
-│       ├── config/
-│       │   ├── TemporalConfig.java   # Temporal client & worker factory
-│       │   └── KafkaConfig.java      # Topic auto-creation & serializers
-│       ├── agents/
-│       │   ├── AgentCapability.java  # Sealed interface (Java 21)
-│       │   └── NexusAgent.java       # LangChain4j AI service
-│       └── temporal/
-│           ├── workflows/            # Durable orchestration definitions
-│           └── activities/           # Side-effect execution units
+│   └── src/main/
+│       ├── java/com/nexus/os/
+│       │   ├── NexusOsApplication.java
+│       │   ├── config/               # Spring config: Temporal, Kafka, Redis,
+│       │   │                         #   CORS, Security, DevSeed
+│       │   ├── domain/               # JPA entities + repositories
+│       │   │                         #   (Tenant, Agent, Workflow, Run, CostLedger,
+│       │   │                         #    OutboxEvent, InboxEvent)
+│       │   ├── tenancy/              # TenantContext + Filter + RLS aspect
+│       │   ├── agents/               # AgentCapability (sealed), NexusAgent,
+│       │   │   │                     #   ModelRouter, PromptCache, HallucinationGuard,
+│       │   │   │                     #   Tribunal (3-agent vote), TokenPricing,
+│       │   │   │                     #   LlmConfig (mock fallback)
+│       │   │   └── rag/              # ChunkingStrategy + EmbeddingService +
+│       │   │                         #   QdrantStore + Retriever
+│       │   ├── temporal/             # Workflows + activities + WorkflowStarter
+│       │   ├── kafka/                # OutboxDispatcher + InboundMessageConsumer
+│       │   │                         #   + WorkflowEventProjector
+│       │   ├── integrations/         # WhatsApp (Twilio + mock), MCP, A2A
+│       │   ├── api/                  # Controllers + ProblemDetail handler
+│       │   ├── billing/              # CostMeter (USD ledger + budget breaker)
+│       │   └── observability/        # AuditLogger + Micrometer config
+│       └── resources/
+│           ├── application*.yml      # default / local / test profiles
+│           ├── db/migration/         # Flyway V001..V007 (RLS + FORCE)
+│           └── logback-spring.xml    # console (dev) / JSON (prod) appenders
 │
 ├── frontend/                         # ⚛️ Next.js 16 (App Router)
-│   ├── package.json
 │   └── src/
 │       ├── app/
-│       │   ├── layout.tsx            # Root layout with fonts & metadata
-│       │   ├── globals.css           # Design system tokens
-│       │   └── page.tsx              # Dashboard entry point
-│       └── components/
-│           └── AgentCanvas.tsx       # React Flow orchestration graph
+│       │   ├── page.tsx              # Polished landing dashboard
+│       │   ├── chat/                 # SSE-streaming live chat panel
+│       │   ├── agents | studio | workflows | runs |
+│       │   ├── cost | observability | memory | integrations | settings
+│       │   └── api/                  # BFF — proxies to Spring backend
+│       ├── components/
+│       │   ├── AgentCanvas.tsx       # React Flow orchestration graph
+│       │   ├── chat/ChatPanel.tsx
+│       │   └── shared/{Sidebar,PageShell,PageHeader}.tsx
+│       └── lib/api-client.ts         # Typed BFF helpers
 │
-├── docker-compose.yml                # 🐳 Full infrastructure stack
+├── observability/                    # Prometheus + Grafana provisioning
+│   ├── prometheus.yml
+│   └── grafana/{provisioning,dashboards}/
+│
+├── docs/                             # Deep documentation (see § above)
+│   ├── SYSTEM_DESIGN.md  ARCHITECTURE.md  PRD.md
+│   ├── COMPETITIVE_ANALYSIS.md  ROADMAP.md
+│   └── ADRS/0001..0007-*.md
+│
+├── docker-compose.yml                # 🐳 Postgres + Kafka + Temporal + Qdrant
+│                                     #   + Redis + Jaeger + Prometheus + Grafana
 ├── CONTRIBUTING.md                   # 🤝 Team roles & governance
-├── .gitignore                        # Java + Node + Python + Docker
 └── README.md                         # 📖 You are here
 ```
 
