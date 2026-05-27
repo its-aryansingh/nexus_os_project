@@ -7,6 +7,8 @@ import com.nexus.os.agents.ModelRouter;
 import com.nexus.os.agents.NexusAgent;
 import com.nexus.os.agents.PromptCache;
 import com.nexus.os.agents.TokenPricing;
+import com.nexus.os.agents.specialists.Orchestrator;
+import com.nexus.os.agents.specialists.Specialist;
 import com.nexus.os.billing.CostMeter;
 import com.nexus.os.domain.OutboxEvent;
 import com.nexus.os.domain.OutboxRepository;
@@ -48,6 +50,7 @@ public class AgentActivityImpl implements AgentActivity {
     private final TokenPricing pricing;
     private final ObjectMapper objectMapper;
     private final OutboxRepository outbox;
+    private final Orchestrator orchestrator;
     private final Timer activityTimer;
 
     public AgentActivityImpl(
@@ -59,6 +62,7 @@ public class AgentActivityImpl implements AgentActivity {
             TokenPricing pricing,
             ObjectMapper objectMapper,
             OutboxRepository outbox,
+            Orchestrator orchestrator,
             MeterRegistry meters
     ) {
         this.nexusAgent = nexusAgent;
@@ -69,6 +73,7 @@ public class AgentActivityImpl implements AgentActivity {
         this.pricing = pricing;
         this.objectMapper = objectMapper;
         this.outbox = outbox;
+        this.orchestrator = orchestrator;
         this.activityTimer = Timer.builder("nexus.activity.execute")
                 .description("Time to execute one agent activity (cache + LLM + guard)")
                 .publishPercentileHistogram()
@@ -104,14 +109,19 @@ public class AgentActivityImpl implements AgentActivity {
 
     @Override
     public String executeAgentTask(String agentId, String requestPayload) {
+        // Back-compat path — default to general_chat intent.
+        return executeWithIntent(agentId, "general_chat", requestPayload);
+    }
+
+    @Override
+    public String executeWithIntent(String agentId, String intent, String requestPayload) {
         final var payload = parsePayload(requestPayload);
         final var tenantId = bindTenant(payload);
         final var workflowRunId = parseUuid(payload.get("workflow_run_id"));
         final var taskStart = System.nanoTime();
         try {
             final var prompt = asString(payload.get("prompt"));
-            final var capability = capabilityFor(agentId);
-            final var response = invoke(tenantId, agentId, capability, prompt);
+            final var response = invokeSpecialist(tenantId, workflowRunId, agentId, intent, prompt);
             emitCompletion(tenantId, workflowRunId, response, null,
                     Duration.ofNanos(System.nanoTime() - taskStart));
             return response;
@@ -125,6 +135,53 @@ public class AgentActivityImpl implements AgentActivity {
     }
 
     // ── internals ───────────────────────────────────────────────────────────
+
+    /**
+     * Specialist-aware invocation. Dispatches the request to the
+     * Orchestrator, which routes to the matching specialist
+     * (Researcher / Copywriter / Analyst / Reviewer). Wraps the whole
+     * call with the same budget + cache + guard + cost-meter chain as
+     * {@link #invoke}.
+     */
+    private String invokeSpecialist(UUID tenantId, UUID workflowRunId, String agentId, String intent, String prompt) {
+        final var start = System.nanoTime();
+        try {
+            costMeter.assertWithinBudget(tenantId, PREFLIGHT_BUDGET_ESTIMATE);
+
+            // Cache key includes the intent so different specialists don't
+            // collide on the same prompt.
+            final var cacheKey = "specialist:" + intent + ":" + prompt;
+            final Optional<String> hit = promptCache.get(cacheKey, "any", 0.0, tenantId.toString());
+            if (hit.isPresent()) {
+                log.debug("Specialist cache HIT — tenant={} intent={}", tenantId, intent);
+                return hit.get();
+            }
+
+            final var req = new Specialist.Request(tenantId, workflowRunId, prompt, intent, Map.of("agent_id", agentId));
+            final var dispatch = orchestrator.dispatch(req, nexusAgent);
+            final var output = dispatch.output();
+            final var specialistName = dispatch.specialist().name();
+            log.debug("Dispatched to specialist={} model={} tokensIn={} tokensOut={}",
+                    specialistName, output.model(), output.tokensIn(), output.tokensOut());
+
+            final var clean = guard.isAcceptable(output.text(), false, false);
+            if (!clean) {
+                log.warn("HallucinationGuard rejected output — tenant={} specialist={} model={} len={}",
+                        tenantId, specialistName, output.model(), output.text().length());
+            }
+
+            promptCache.put(cacheKey, "any", 0.0, tenantId.toString(), output.text());
+
+            final var usd = pricing.usdFor(output.model(), output.tokensIn(), output.tokensOut());
+            costMeter.record(tenantId, workflowRunId, null,
+                    providerFor(output.model()), output.model(), specialistName,
+                    output.tokensIn(), output.tokensOut(), 0, usd);
+
+            return output.text();
+        } finally {
+            activityTimer.record(Duration.ofNanos(System.nanoTime() - start));
+        }
+    }
 
     private String invoke(UUID tenantId, String operation, AgentCapability capability, String prompt) {
         final var start = System.nanoTime();

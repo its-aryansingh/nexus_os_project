@@ -46,12 +46,15 @@ public class AgentOrchestrationWorkflowImpl implements AgentOrchestrationWorkflo
         String intent = activities.classifyIntent(requestPayload);
         log.info("  Intent classified: {}", intent);
 
-        // Stage 2: Route to the appropriate agent
+        // Stage 2: Route to the appropriate agent (audit-trail only — the
+        // actual specialist is chosen by the Orchestrator inside the activity).
         String agentId = activities.routeToAgent(intent);
         log.info("  Routed to agent: {}", agentId);
 
-        // Stage 3: Execute the agent task
-        String response = activities.executeAgentTask(agentId, requestPayload);
+        // Stage 3: Execute via the Specialist Orchestrator. Passing the
+        // classified intent lets the Orchestrator pick the matching
+        // specialist (Researcher / Copywriter / Analyst / Reviewer).
+        String response = activities.executeWithIntent(agentId, intent, requestPayload);
         log.info("✔ Workflow complete — response length: {}", response.length());
 
         return response;
