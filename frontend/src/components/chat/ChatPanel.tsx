@@ -8,12 +8,15 @@ type Message = {
   text: string;
   ts: number;
   streaming?: boolean;
+  specialist?: string;
+  model?: string;
 };
 
 export default function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const send = useCallback(async () => {
@@ -33,7 +36,12 @@ export default function ChatPanel() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, model: "gpt-4o-mini", temperature: 0.7 }),
+        body: JSON.stringify({
+          prompt,
+          model: "gpt-4o-mini",
+          temperature: 0.7,
+          sessionId: sessionId,
+        }),
       });
 
       if (!res.ok || !res.body) {
@@ -75,6 +83,25 @@ export default function ChatPanel() {
               )
             );
           }
+          if (event === "meta" && data) {
+            try {
+              const meta = JSON.parse(data) as {
+                session_id?: string;
+                specialist?: string;
+                model?: string;
+              };
+              if (meta.session_id) setSessionId(meta.session_id);
+              setMessages((m) =>
+                m.map((msg) =>
+                  msg.ts === ts + 1
+                    ? { ...msg, specialist: meta.specialist, model: meta.model }
+                    : msg
+                )
+              );
+            } catch {
+              // bad JSON in meta — ignore
+            }
+          }
           if (event === "done" || event === "error") {
             setMessages((m) =>
               m.map((msg) => (msg.ts === ts + 1 ? { ...msg, streaming: false } : msg))
@@ -97,7 +124,12 @@ export default function ChatPanel() {
       setSending(false);
       inputRef.current?.focus();
     }
-  }, [draft, sending]);
+  }, [draft, sending, sessionId]);
+
+  const resetSession = useCallback(() => {
+    setSessionId(null);
+    setMessages([]);
+  }, []);
 
   return (
     <div
@@ -121,16 +153,37 @@ export default function ChatPanel() {
       >
         <Sparkles size={16} color="var(--accent-violet)" />
         <span style={{ fontWeight: 700, fontSize: 14 }}>Nexus Chat</span>
-        <span
+        {sessionId && (
+          <span
+            style={{
+              fontSize: 10,
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-mono)",
+              padding: "2px 8px",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: 6,
+            }}
+            title={`Session ${sessionId}`}
+          >
+            session {sessionId.slice(0, 8)}
+          </span>
+        )}
+        <button
+          onClick={resetSession}
+          disabled={sending}
           style={{
             marginLeft: "auto",
-            fontSize: 10,
-            color: "var(--text-muted)",
-            fontFamily: "var(--font-mono)",
+            background: "transparent",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: 6,
+            padding: "4px 10px",
+            fontSize: 11,
+            color: "var(--text-secondary)",
+            cursor: sending ? "not-allowed" : "pointer",
           }}
         >
-          /api/chat → SSE → AgentActivityImpl
-        </span>
+          New chat
+        </button>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
@@ -183,6 +236,18 @@ export default function ChatPanel() {
                     verticalAlign: "middle",
                   }}
                 />
+              )}
+              {m.role === "agent" && m.specialist && !m.streaming && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 10,
+                    color: "var(--text-muted)",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  via {m.specialist} · {m.model}
+                </div>
               )}
             </div>
           </div>
