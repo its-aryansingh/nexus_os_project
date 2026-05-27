@@ -7,6 +7,7 @@ import com.nexus.os.domain.TenantRepository;
 import com.nexus.os.domain.Workflow;
 import com.nexus.os.domain.WorkflowRepository;
 import com.nexus.os.tenancy.TenantContext;
+import com.nexus.os.temporal.workflows.templates.WorkflowTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
@@ -91,8 +92,10 @@ public class DevSeed {
                 seedAgent(agents, tenantId, "support",  "Support Agent",  "Resolves customer questions with empathy.",                   "gpt-4o-mini", List.of("search_memory", "send_reply"));
                 seedAgent(agents, tenantId, "coder",    "Coder Agent",    "Generates and reviews production-grade Java/TypeScript code.", "gpt-4o",      List.of("run_tests", "open_pr", "search_repo"));
                 seedAgent(agents, tenantId, "analyst",  "Analyst Agent",  "RAG over your internal docs; cites every claim.",              "gpt-4o-mini", List.of("search_memory", "render_chart"));
-                seedWorkflow(workflows, tenantId, "default-orchestration", "Default Orchestration", "Classify intent → route → execute. The v0.1 baseline saga.", 1);
-                seedWorkflow(workflows, tenantId, "support-triage",         "Support Triage",         "Inbound message → urgency check → human-or-agent route.",      1);
+                // Seed every catalog template — the Studio renders them on first boot.
+                for (final var template : WorkflowTemplate.catalog()) {
+                    seedTemplateWorkflow(workflows, tenantId, template);
+                }
             });
         } finally {
             TenantContext.clear();
@@ -122,35 +125,22 @@ public class DevSeed {
         log.info("DevSeed: agent inserted tenant={} slug={}", tenantId, slug);
     }
 
-    private void seedWorkflow(
+    private void seedTemplateWorkflow(
             WorkflowRepository workflows,
             UUID tenantId,
-            String slug,
-            String name,
-            String description,
-            int version
+            WorkflowTemplate template
     ) {
-        if (workflows.findByTenantIdAndSlugAndVersion(tenantId, slug, version).isPresent()) return;
+        if (workflows.findByTenantIdAndSlugAndVersion(tenantId, template.slug(), 1).isPresent()) return;
         final var w = new Workflow();
         w.setTenantId(tenantId);
-        w.setSlug(slug);
-        w.setVersion(version);
-        w.setName(name);
-        w.setDescription(description);
-        w.setTemporalWorkflowType("AgentOrchestrationWorkflow");
-        w.setDefinition(Map.of(
-                "nodes", List.of(
-                        Map.of("id", "classify", "type", "activity", "name", "classifyIntent"),
-                        Map.of("id", "route",    "type", "activity", "name", "routeToAgent"),
-                        Map.of("id", "execute",  "type", "activity", "name", "executeAgentTask")
-                ),
-                "edges", List.of(
-                        Map.of("from", "classify", "to", "route"),
-                        Map.of("from", "route",    "to", "execute")
-                )
-        ));
+        w.setSlug(template.slug());
+        w.setVersion(1);
+        w.setName(template.name());
+        w.setDescription(template.description());
+        w.setTemporalWorkflowType(template.temporalWorkflowType());
+        w.setDefinition(template.definition());
         w.setActive(true);
         workflows.save(w);
-        log.info("DevSeed: workflow inserted tenant={} slug={}", tenantId, slug);
+        log.info("DevSeed: template workflow inserted tenant={} slug={}", tenantId, template.slug());
     }
 }
