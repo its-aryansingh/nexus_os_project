@@ -12,6 +12,7 @@ import com.nexus.os.agents.specialists.Specialist;
 import com.nexus.os.billing.CostMeter;
 import com.nexus.os.domain.OutboxEvent;
 import com.nexus.os.domain.OutboxRepository;
+import com.nexus.os.observability.ToolCallRecorder;
 import com.nexus.os.tenancy.TenantContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -51,6 +52,7 @@ public class AgentActivityImpl implements AgentActivity {
     private final ObjectMapper objectMapper;
     private final OutboxRepository outbox;
     private final Orchestrator orchestrator;
+    private final ToolCallRecorder toolCalls;
     private final Timer activityTimer;
 
     public AgentActivityImpl(
@@ -63,6 +65,7 @@ public class AgentActivityImpl implements AgentActivity {
             ObjectMapper objectMapper,
             OutboxRepository outbox,
             Orchestrator orchestrator,
+            ToolCallRecorder toolCalls,
             MeterRegistry meters
     ) {
         this.nexusAgent = nexusAgent;
@@ -74,6 +77,7 @@ public class AgentActivityImpl implements AgentActivity {
         this.objectMapper = objectMapper;
         this.outbox = outbox;
         this.orchestrator = orchestrator;
+        this.toolCalls = toolCalls;
         this.activityTimer = Timer.builder("nexus.activity.execute")
                 .description("Time to execute one agent activity (cache + LLM + guard)")
                 .publishPercentileHistogram()
@@ -158,26 +162,48 @@ public class AgentActivityImpl implements AgentActivity {
             }
 
             final var req = new Specialist.Request(tenantId, workflowRunId, prompt, intent, Map.of("agent_id", agentId));
-            final var dispatch = orchestrator.dispatch(req, nexusAgent);
-            final var output = dispatch.output();
-            final var specialistName = dispatch.specialist().name();
-            log.debug("Dispatched to specialist={} model={} tokensIn={} tokensOut={}",
-                    specialistName, output.model(), output.tokensIn(), output.tokensOut());
+            final var dispatchStart = System.nanoTime();
+            String specialistName = "unknown";
+            try {
+                final var dispatch = orchestrator.dispatch(req, nexusAgent);
+                final var output = dispatch.output();
+                specialistName = dispatch.specialist().name();
+                log.debug("Dispatched to specialist={} model={} tokensIn={} tokensOut={}",
+                        specialistName, output.model(), output.tokensIn(), output.tokensOut());
 
-            final var clean = guard.isAcceptable(output.text(), false, false);
-            if (!clean) {
-                log.warn("HallucinationGuard rejected output — tenant={} specialist={} model={} len={}",
-                        tenantId, specialistName, output.model(), output.text().length());
+                final var clean = guard.isAcceptable(output.text(), false, false);
+                if (!clean) {
+                    log.warn("HallucinationGuard rejected output — tenant={} specialist={} model={} len={}",
+                            tenantId, specialistName, output.model(), output.text().length());
+                }
+
+                promptCache.put(cacheKey, "any", 0.0, tenantId.toString(), output.text());
+
+                final var usd = pricing.usdFor(output.model(), output.tokensIn(), output.tokensOut());
+                costMeter.record(tenantId, workflowRunId, null,
+                        providerFor(output.model()), output.model(), specialistName,
+                        output.tokensIn(), output.tokensOut(), 0, usd);
+
+                final var elapsedMs = Duration.ofNanos(System.nanoTime() - dispatchStart).toMillis();
+                toolCalls.record(tenantId, workflowRunId, null, specialistName,
+                        Map.of("intent", intent,
+                                "prompt_len", prompt == null ? 0 : prompt.length(),
+                                "agent_id", agentId),
+                        Map.of("model", output.model(),
+                                "tokens_in", output.tokensIn(),
+                                "tokens_out", output.tokensOut(),
+                                "usd", usd,
+                                "metadata", output.metadata()),
+                        null, elapsedMs);
+
+                return output.text();
+            } catch (RuntimeException specialistFailed) {
+                final var elapsedMs = Duration.ofNanos(System.nanoTime() - dispatchStart).toMillis();
+                toolCalls.record(tenantId, workflowRunId, null, specialistName,
+                        Map.of("intent", intent, "agent_id", agentId),
+                        null, specialistFailed.getMessage(), elapsedMs);
+                throw specialistFailed;
             }
-
-            promptCache.put(cacheKey, "any", 0.0, tenantId.toString(), output.text());
-
-            final var usd = pricing.usdFor(output.model(), output.tokensIn(), output.tokensOut());
-            costMeter.record(tenantId, workflowRunId, null,
-                    providerFor(output.model()), output.model(), specialistName,
-                    output.tokensIn(), output.tokensOut(), 0, usd);
-
-            return output.text();
         } finally {
             activityTimer.record(Duration.ofNanos(System.nanoTime() - start));
         }
