@@ -39,13 +39,24 @@ public class Tribunal {
     }
 
     /**
-     * Submit a question to {@code N} jurors (each invocation of {@code juror}
-     * should be independent — different seeds or temperature variance).
-     * Returns the majority answer + a disagreement score in [0, 1].
+     * Submit a question to {@code defaultJurors} jurors. See
+     * {@link #vote(Supplier, int)} for the configurable-juror variant.
      */
     public Verdict<String> vote(Supplier<String> juror) {
+        return vote(juror, defaultJurors);
+    }
+
+    /**
+     * Submit a question to {@code jurors} jurors (each invocation of
+     * {@code juror} should be independent — different seeds or temperature
+     * variance). Returns the majority answer + a disagreement score in [0, 1].
+     */
+    public Verdict<String> vote(Supplier<String> juror, int jurors) {
+        if (jurors < 1) {
+            throw new IllegalArgumentException("jurors must be >= 1");
+        }
         final var votes = new HashMap<String, Integer>();
-        for (int i = 0; i < defaultJurors; i++) {
+        for (int i = 0; i < jurors; i++) {
             final var answer = juror.get();
             votes.merge(answer, 1, Integer::sum);
         }
@@ -59,13 +70,13 @@ public class Tribunal {
             }
         }
 
-        final var disagreement = 1.0 - ((double) bestCount / defaultJurors);
+        final var disagreement = 1.0 - ((double) bestCount / jurors);
         if (disagreement >= disagreementThreshold) {
             meters.counter("nexus.tribunal.disagreement").increment();
         }
         meters.counter("nexus.tribunal.votes").increment();
 
-        return new Verdict<>(bestAnswer, bestCount, defaultJurors, disagreement, List.copyOf(votes.keySet()));
+        return new Verdict<>(bestAnswer, bestCount, jurors, disagreement, List.copyOf(votes.keySet()));
     }
 
     public record Verdict<T>(
